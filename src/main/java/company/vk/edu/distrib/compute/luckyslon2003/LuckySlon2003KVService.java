@@ -12,6 +12,7 @@ import java.io.InputStream;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.util.NoSuchElementException;
+import java.util.Objects;
 import java.util.concurrent.Executors;
 
 public class LuckySlon2003KVService implements KVService {
@@ -52,7 +53,7 @@ public class LuckySlon2003KVService implements KVService {
     }
 
     private void handleStatus(HttpExchange exchange) throws IOException {
-        if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+        if (!Objects.equals(exchange.getRequestMethod(), "GET")) {
             sendEmpty(exchange, 405);
             return;
         }
@@ -66,7 +67,7 @@ public class LuckySlon2003KVService implements KVService {
             return;
         }
 
-        switch (exchange.getRequestMethod().toUpperCase()) {
+        switch (exchange.getRequestMethod().toUpperCase(java.util.Locale.ROOT)) {
             case "GET" -> handleGet(exchange, id);
             case "PUT" -> handlePut(exchange, id);
             case "DELETE" -> handleDelete(exchange, id);

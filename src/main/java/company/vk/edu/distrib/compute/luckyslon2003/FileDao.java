@@ -45,11 +45,7 @@ public class FileDao implements Dao<byte[]> {
     @Override
     public void delete(String key) throws IllegalArgumentException, IOException {
         validateKey(key);
-        try {
-            Files.delete(resolve(key));
-        } catch (NoSuchFileException e) {
-            // nothing to do
-        }
+        Files.deleteIfExists(resolve(key));
     }
 
     @Override
