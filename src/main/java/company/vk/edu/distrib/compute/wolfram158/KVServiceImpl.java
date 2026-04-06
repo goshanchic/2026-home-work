@@ -113,7 +113,7 @@ public class KVServiceImpl implements KVService {
     private void handleDeleteEntity(
             final HttpExchange exchange,
             final Dao<byte[]> dao
-    ) {
+    ) throws IOException {
         try (exchange) {
             final Map<String, List<String>> queries = Utils.extractQueryParams(exchange.getRequestURI().getQuery());
             final List<String> values = queries.get(QueryParamConstants.ID);
@@ -123,8 +123,6 @@ public class KVServiceImpl implements KVService {
                 dao.delete(values.getFirst());
                 exchange.sendResponseHeaders(HttpURLConnection.HTTP_ACCEPTED, -1);
             }
-        } catch (IOException e) {
-            throw new RuntimeException(e);
         }
     }
 }
