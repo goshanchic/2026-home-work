@@ -10,6 +10,7 @@ import company.vk.edu.distrib.compute.b10nicle.B10nicleKVServiceFactory;
 import company.vk.edu.distrib.compute.nihuaway00.NihuawayKVServiceFactory;
 import company.vk.edu.distrib.compute.mandesero.KVServiceFactoryImpl;
 import company.vk.edu.distrib.compute.vitos23.Vitos23KVServiceFactory;
+import company.vk.edu.distrib.compute.vredakon.VredakonKVServiceFactory;
 
 import org.jspecify.annotations.NonNull;
 import org.junit.jupiter.api.extension.ExtensionContext;
@@ -27,6 +28,7 @@ public class KVServiceFactoryArgumentsProvider implements ArgumentsProvider {
         Vitos23KVServiceFactory.class,
         NihuawayKVServiceFactory.class,
         B10nicleKVServiceFactory.class,
+        VredakonKVServiceFactory.class,
         PopovIgorKVServiceFactoryImpl.class
     );
 
