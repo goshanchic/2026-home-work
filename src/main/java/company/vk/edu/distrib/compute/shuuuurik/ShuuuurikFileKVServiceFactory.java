@@ -4,11 +4,13 @@ import company.vk.edu.distrib.compute.KVService;
 import company.vk.edu.distrib.compute.KVServiceFactory;
 
 import java.io.IOException;
+import java.nio.file.Path;
 
-public class InMemoryKVServiceFactory extends KVServiceFactory {
+public class ShuuuurikFileKVServiceFactory extends KVServiceFactory {
     @Override
     protected KVService doCreate(int port) throws IOException {
-        InMemoryDao dao = new InMemoryDao();
+        Path root = Path.of(".data");
+        FileDao dao = new FileDao(root);
         return new KVServiceImpl(port, dao);
     }
 }

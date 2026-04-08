@@ -31,10 +31,11 @@ public class InMemoryDao implements Dao<byte[]> {
     public byte[] get(String key) throws NoSuchElementException, IllegalArgumentException, IOException {
         validateKey(key);
 
-        if (!storage.containsKey(key)) {
+        byte[] value = storage.get(key);
+        if (value == null) {
             throw new NoSuchElementException("No value for key: " + key);
         }
-        byte[] value = storage.get(key);
+
         return Arrays.copyOf(value, value.length);
     }
 

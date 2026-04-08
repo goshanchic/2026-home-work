@@ -172,6 +172,11 @@ public class KVServiceImpl implements KVService {
                 }
             } catch (NoSuchElementException e) {
                 exchange.sendResponseHeaders(404, -1);
+            } catch (IllegalArgumentException e) {
+                exchange.sendResponseHeaders(400, -1);
+            } catch (Exception e) {
+                log.error("Unexpected error while handling request", e);
+                exchange.sendResponseHeaders(500, -1);
             }
         }
     }
