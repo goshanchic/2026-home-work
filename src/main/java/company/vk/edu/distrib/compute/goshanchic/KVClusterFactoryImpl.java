@@ -7,6 +7,17 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class KVClusterFactoryImpl implements KVClusterFactory {
+    private final int replicationFactor;
+    private final int defaultAck;
+
+    public KVClusterFactoryImpl() {
+        this(1, 1);
+    }
+
+    public KVClusterFactoryImpl(int replicationFactor, int defaultAck) {
+        this.replicationFactor = replicationFactor;
+        this.defaultAck = defaultAck;
+    }
 
     @Override
     public KVCluster doCreate(List<Integer> ports) throws IOException {
@@ -22,7 +33,7 @@ public class KVClusterFactoryImpl implements KVClusterFactory {
 
             private void createAndStartService(int port) throws IOException {
                 InMemoryDao dao = new InMemoryDao();
-                KVService service = new KVServiceImpl(port, ports, dao);
+                KVService service = new KVServiceImpl(port, ports, dao, replicationFactor, defaultAck);
                 service.start();
                 services.add(service);
             }
