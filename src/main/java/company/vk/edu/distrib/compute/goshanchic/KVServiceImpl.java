@@ -2,10 +2,15 @@ package company.vk.edu.distrib.compute.goshanchic;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import company.vk.edu.distrib.compute.AuditEvent;
 import company.vk.edu.distrib.compute.goshanchic.grpc.KVInternalServiceGrpc;
 import company.vk.edu.distrib.compute.goshanchic.grpc.KVInternal.*;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.serialization.StringSerializer;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -14,6 +19,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Properties;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
@@ -44,6 +50,9 @@ public class KVServiceImpl implements ReplicatedService {
 
     private final int replicationFactor;
     private int defaultAck;
+    private boolean asyncMode = true;
+    private KafkaProducer<String, String> kafkaProducer;
+    private String bootstrapServers = "localhost:9092";
 
     public KVServiceImpl(int port, List<Integer> allPorts, InMemoryDao dao) throws IOException {
         this(port, allPorts, dao, 1, 1);
@@ -66,6 +75,8 @@ public class KVServiceImpl implements ReplicatedService {
         this.grpcServer = new GoshanchicGrpcServer(grpcPort, dao);
         this.replicationFactor = Math.min(replicationFactor, clusterNodes.size());
         this.defaultAck = defaultAck;
+
+        setBootstrapServers("localhost:9092");
         setupEndpoints();
     }
 
@@ -85,6 +96,22 @@ public class KVServiceImpl implements ReplicatedService {
             throw new IllegalArgumentException("ack cannot exceed replicationFactor");
         }
         this.defaultAck = ack;
+    }
+
+    public void setAsync(boolean async) {
+        this.asyncMode = async;
+    }
+
+    public void setBootstrapServers(String bootstrapServers) {
+        this.bootstrapServers = bootstrapServers;
+        if (kafkaProducer != null) {
+            kafkaProducer.close();
+        }
+        Properties producerProps = new Properties();
+        producerProps.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+        producerProps.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+        producerProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+        this.kafkaProducer = new KafkaProducer<>(producerProps);
     }
 
     private void setupEndpoints() {
@@ -113,6 +140,9 @@ public class KVServiceImpl implements ReplicatedService {
         String query = exchange.getRequestURI().getQuery();
         String id = extractParam(query, PARAM_ID);
         int ack = extractAck(query);
+        String method = exchange.getRequestMethod();
+
+        sendAuditEvent(method, id);
 
         if (isInvalidAck(ack)) {
             sendResponse(exchange, STATUS_BAD_REQUEST,
@@ -126,7 +156,6 @@ public class KVServiceImpl implements ReplicatedService {
         }
 
         List<String> replicas = getReplicas(id);
-        String method = exchange.getRequestMethod();
 
         switch (method) {
             case METHOD_GET:
@@ -141,6 +170,26 @@ public class KVServiceImpl implements ReplicatedService {
             default:
                 sendResponse(exchange, STATUS_METHOD_NOT_ALLOWED, "Method Not Allowed".getBytes());
                 break;
+        }
+    }
+
+    private void sendAuditEvent(String method, String id) {
+        AuditEvent event = new AuditEvent(method, id, System.currentTimeMillis());
+        String value = event.method() + " " + event.id() + " " + event.timestamp();
+        ProducerRecord<String, String> record = new ProducerRecord<>("audit", value);
+
+        if (asyncMode) {
+            kafkaProducer.send(record, (metadata, exception) -> {
+                if (exception != null) {
+                    System.err.println("Audit send failed: " + exception.getMessage());
+                }
+            });
+        } else {
+            try {
+                kafkaProducer.send(record).get();
+            } catch (Exception e) {
+                System.err.println("Audit send failed: " + e.getMessage());
+            }
         }
     }
 
@@ -383,6 +432,9 @@ public class KVServiceImpl implements ReplicatedService {
                 Thread.currentThread().interrupt();
             }
         });
+        if (kafkaProducer != null) {
+            kafkaProducer.close();
+        }
         try {
             dao.close();
         } catch (IOException ex) {
@@ -390,8 +442,6 @@ public class KVServiceImpl implements ReplicatedService {
         }
     }
 }
-
-
 
 
 

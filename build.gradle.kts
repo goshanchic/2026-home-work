@@ -152,3 +152,10 @@ tasks.named("pmdIntegrationTest") {
 tasks.named("pmdTest") {
     enabled = false
 }
+
+tasks.register<JavaExec>("runConsensus") {
+    group = "application"
+    mainClass = "company.vk.edu.distrib.compute.goshanchic.consensus.LeaderElectionDemo"
+    classpath = sourceSets.main.get().runtimeClasspath
+    maxHeapSize = "128m"
+}
