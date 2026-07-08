@@ -7,6 +7,7 @@ import io.grpc.ServerBuilder;
 import io.grpc.stub.StreamObserver;
 
 import java.io.IOException;
+import java.util.concurrent.TimeUnit;
 
 public final class GoshanchicGrpcServer {
     private final Server server;
@@ -25,6 +26,12 @@ public final class GoshanchicGrpcServer {
 
     public void stop() {
         server.shutdown();
+        try {
+            server.awaitTermination(1, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            server.shutdownNow();
+        }
     }
 
     private final class KVInternalServiceImpl extends KVInternalServiceGrpc.KVInternalServiceImplBase {

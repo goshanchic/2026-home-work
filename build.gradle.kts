@@ -51,6 +51,7 @@ dependencies {
     testImplementation("org.testcontainers:testcontainers:2.0.5")
     testImplementation("org.testcontainers:junit-jupiter:1.21.4")
     testImplementation("org.testcontainers:kafka:1.21.4")
+    testImplementation("org.apache.commons:commons-lang3:3.17.0")
 }
 
 protobuf {

@@ -3,7 +3,11 @@ package company.vk.edu.distrib.compute.goshanchic.consensus;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
-public class LeaderElectionDemo {
+@SuppressWarnings("PMD.SystemPrintln")
+public final class LeaderElectionDemo {
+
+    private LeaderElectionDemo() {
+    }
 
     public static void main(String[] args) throws InterruptedException {
         int nodeCount = 5;
@@ -19,7 +23,6 @@ public class LeaderElectionDemo {
             node.start();
         }
 
-        // Работаем 30 секунд
         Thread.sleep(30000);
 
         System.out.println("\n=== Final State ===");

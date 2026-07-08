@@ -9,6 +9,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
+@SuppressWarnings({"PMD.AvoidUsingVolatile", "PMD.SystemPrintln", "PMD.UnnecessaryFullyQualifiedName"})
 public class ConsensusNode extends Thread {
     private static final long ELECTION_TIMEOUT_MS = 3000;
     private static final double FAILURE_PROBABILITY = 0.1;
@@ -26,6 +27,7 @@ public class ConsensusNode extends Thread {
     private boolean randomFailuresEnabled = true;
 
     public ConsensusNode(int nodeId, Map<Integer, ConsensusNode> cluster) {
+        super();
         this.nodeId = nodeId;
         this.cluster = cluster;
         this.inbox = new LinkedBlockingQueue<>();
@@ -36,9 +38,17 @@ public class ConsensusNode extends Thread {
         this.electionInProgress = false;
     }
 
-    public int getNodeId() { return nodeId; }
-    public int getLeaderId() { return leaderId.get(); }
-    public boolean isNodeAlive() { return alive.get(); }
+    public int getNodeId() {
+        return nodeId;
+    }
+
+    public int getLeaderId() {
+        return leaderId.get();
+    }
+
+    public boolean isNodeAlive() {
+        return alive.get();
+    }
 
     public void setAlive(boolean aliveValue) {
         this.alive.set(aliveValue);
@@ -64,23 +74,27 @@ public class ConsensusNode extends Thread {
 
     @Override
     public void run() {
-        // Delay before first election to let all nodes start
-        try { Thread.sleep(500 + nodeId * 100L); } catch (InterruptedException ignored) {}
+        try {
+            sleep(500 + nodeId * 100L);
+        } catch (InterruptedException ignored) {
+            interrupt();
+            return;
+        }
 
         while (running.get()) {
             try {
                 simulateFailure();
                 if (!alive.get()) {
-                    Thread.sleep(1000);
+                    sleep(1000);
                     continue;
                 }
 
                 processInbox();
                 checkLeader();
                 sendPingToLeader();
-                Thread.sleep(500);
+                sleep(500);
             } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+                interrupt();
                 break;
             }
         }
@@ -92,11 +106,13 @@ public class ConsensusNode extends Thread {
             alive.set(false);
             new Thread(() -> {
                 try {
-                    Thread.sleep(RECOVERY_TIME_MS);
+                    sleep(RECOVERY_TIME_MS);
                     alive.set(true);
                     lastPingResponse = System.currentTimeMillis();
                     System.out.println("[Node " + nodeId + "] Recovered!");
-                } catch (InterruptedException ignored) {}
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
             }).start();
         }
     }
@@ -108,7 +124,7 @@ public class ConsensusNode extends Thread {
             switch (msg.getType()) {
                 case PING -> handlePing(msg);
                 case ELECT -> handleElect(msg);
-                case ANSWER -> handleAnswer(msg);
+                case ANSWER -> handleAnswer();
                 case VICTORY -> handleVictory(msg);
             }
         }
@@ -127,7 +143,7 @@ public class ConsensusNode extends Thread {
         }
     }
 
-    private void handleAnswer(Message msg) {
+    private void handleAnswer() {
         electionInProgress = false;
     }
 
@@ -144,7 +160,9 @@ public class ConsensusNode extends Thread {
             startElection();
             return;
         }
-        if (currentLeader == nodeId) return;
+        if (currentLeader == nodeId) {
+            return;
+        }
 
         long timeSinceLastResponse = System.currentTimeMillis() - lastPingResponse;
         if (timeSinceLastResponse > ELECTION_TIMEOUT_MS) {
@@ -166,21 +184,24 @@ public class ConsensusNode extends Thread {
     }
 
     private synchronized void startElection() {
-        if (electionInProgress) return;
+        if (electionInProgress) {
+            return;
+        }
         electionInProgress = true;
         System.out.println("[Node " + nodeId + "] Starting election...");
 
-        // Send ELECT to all higher nodes
         for (ConsensusNode node : cluster.values()) {
             if (node.getNodeId() > nodeId && node.isNodeAlive()) {
                 node.sendMessage(new Message(MessageType.ELECT, nodeId));
             }
         }
 
-        // Wait for answers
-        try { Thread.sleep(2000); } catch (InterruptedException ignored) {}
+        try {
+            sleep(2000);
+        } catch (InterruptedException ignored) {
+            interrupt();
+        }
 
-        // If no answer from higher nodes, become leader
         if (electionInProgress) {
             leaderId.set(nodeId);
             System.out.println("[Node " + nodeId + "] I am the leader!");

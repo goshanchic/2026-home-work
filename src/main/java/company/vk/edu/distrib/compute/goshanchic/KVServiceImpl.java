@@ -3,6 +3,8 @@ package company.vk.edu.distrib.compute.goshanchic;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import company.vk.edu.distrib.compute.AuditEvent;
+import company.vk.edu.distrib.compute.AuditableKVService;
+import company.vk.edu.distrib.compute.ReplicatedService;
 import company.vk.edu.distrib.compute.goshanchic.grpc.KVInternalServiceGrpc;
 import company.vk.edu.distrib.compute.goshanchic.grpc.KVInternal.*;
 import io.grpc.ManagedChannel;
@@ -20,12 +22,20 @@ import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Properties;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 
-@SuppressWarnings("PMD.GodClass")
-public class KVServiceImpl implements ReplicatedService {
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+@SuppressWarnings({"PMD.GodClass", "PMD.ExcessiveImports", "PMD.CouplingBetweenObjects"})
+public class KVServiceImpl implements ReplicatedService, AuditableKVService {
+    private static final Logger LOG = LoggerFactory.getLogger(KVServiceImpl.class);
     private static final String METHOD_GET = "GET";
     private static final String METHOD_PUT = "PUT";
     private static final String METHOD_DELETE = "DELETE";
@@ -41,17 +51,20 @@ public class KVServiceImpl implements ReplicatedService {
     private static final int STATUS_INTERNAL_ERROR = 500;
     private static final int STATUS_SERVICE_UNAVAILABLE = 503;
 
+    private final int port;
     private final HttpServer httpServer;
     private final GoshanchicGrpcServer grpcServer;
     private final InMemoryDao dao;
     private final List<String> clusterNodes;
     private final String selfAddress;
     private final Map<String, ManagedChannel> grpcChannels = new ConcurrentHashMap<>();
+    private final Set<Integer> disabledReplicas = new CopyOnWriteArraySet<>();
 
     private final int replicationFactor;
     private int defaultAck;
     private boolean asyncMode = true;
-    private KafkaProducer<String, String> kafkaProducer;
+    private final AtomicReference<KafkaProducer<String, String>> kafkaProducer = new AtomicReference<>();
+    private final ReentrantLock producerLock = new ReentrantLock();
     private String bootstrapServers = "localhost:9092";
 
     public KVServiceImpl(int port, List<Integer> allPorts, InMemoryDao dao) throws IOException {
@@ -65,6 +78,7 @@ public class KVServiceImpl implements ReplicatedService {
                     "ack (" + defaultAck + ") cannot exceed replicationFactor (" + replicationFactor + ")");
         }
 
+        this.port = port;
         this.dao = dao;
         this.selfAddress = "http://localhost:" + port;
         int grpcPort = port + 1000;
@@ -76,42 +90,67 @@ public class KVServiceImpl implements ReplicatedService {
         this.replicationFactor = Math.min(replicationFactor, clusterNodes.size());
         this.defaultAck = defaultAck;
 
-        setBootstrapServers("localhost:9092");
         setupEndpoints();
     }
 
     @Override
-    public int getReplicationFactor() {
+    public int port() {
+        return port;
+    }
+
+    @Override
+    public int numberOfReplicas() {
         return replicationFactor;
     }
 
     @Override
-    public int getAck() {
-        return defaultAck;
+    public void disableReplica(int nodeId) {
+        disabledReplicas.add(nodeId);
     }
 
     @Override
-    public void setAck(int ack) {
-        if (ack > replicationFactor) {
-            throw new IllegalArgumentException("ack cannot exceed replicationFactor");
-        }
-        this.defaultAck = ack;
+    public void enableReplica(int nodeId) {
+        disabledReplicas.remove(nodeId);
     }
 
-    public void setAsync(boolean async) {
-        this.asyncMode = async;
+    @Override
+    public void setAsync(boolean enabled) {
+        this.asyncMode = enabled;
     }
 
+    @Override
     public void setBootstrapServers(String bootstrapServers) {
         this.bootstrapServers = bootstrapServers;
-        if (kafkaProducer != null) {
-            kafkaProducer.close();
+        KafkaProducer<String, String> old = kafkaProducer.getAndSet(null);
+        if (old != null) {
+            old.close();
         }
-        Properties producerProps = new Properties();
-        producerProps.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
-        producerProps.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
-        producerProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
-        this.kafkaProducer = new KafkaProducer<>(producerProps);
+    }
+
+    private KafkaProducer<String, String> ensureProducer() {
+        KafkaProducer<String, String> p = kafkaProducer.get();
+        if (p == null) {
+            producerLock.lock();
+            try {
+                p = kafkaProducer.get();
+                if (p == null) {
+                    p = createProducer(bootstrapServers);
+                    kafkaProducer.set(p);
+                }
+            } finally {
+                producerLock.unlock();
+            }
+        }
+        return p;
+    }
+
+    private static KafkaProducer<String, String> createProducer(String servers) {
+        Properties props = new Properties();
+        props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, servers);
+        props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+        props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+        props.put(ProducerConfig.MAX_BLOCK_MS_CONFIG, "100");
+        return new KafkaProducer<>(props);
     }
 
     private void setupEndpoints() {
@@ -142,8 +181,6 @@ public class KVServiceImpl implements ReplicatedService {
         int ack = extractAck(query);
         String method = exchange.getRequestMethod();
 
-        sendAuditEvent(method, id);
-
         if (isInvalidAck(ack)) {
             sendResponse(exchange, STATUS_BAD_REQUEST,
                     ("Invalid ack: " + ack + " > " + replicationFactor).getBytes());
@@ -154,6 +191,8 @@ public class KVServiceImpl implements ReplicatedService {
             sendResponse(exchange, STATUS_BAD_REQUEST, "Bad Request".getBytes());
             return;
         }
+
+        sendAuditEvent(method, id);
 
         List<String> replicas = getReplicas(id);
 
@@ -179,16 +218,22 @@ public class KVServiceImpl implements ReplicatedService {
         ProducerRecord<String, String> record = new ProducerRecord<>("audit", value);
 
         if (asyncMode) {
-            kafkaProducer.send(record, (metadata, exception) -> {
-                if (exception != null) {
-                    System.err.println("Audit send failed: " + exception.getMessage());
-                }
-            });
+            try {
+                KafkaProducer<String, String> producer = ensureProducer();
+                producer.send(record, (metadata, exception) -> {
+                    if (exception != null) {
+                        LOG.warn("Audit send failed: {}", exception.getMessage());
+                    }
+                });
+            } catch (Exception e) {
+                LOG.warn("Audit producer unavailable: {}", e.getMessage());
+            }
         } else {
             try {
-                kafkaProducer.send(record).get();
+                KafkaProducer<String, String> producer = ensureProducer();
+                producer.send(record).get();
             } catch (Exception e) {
-                System.err.println("Audit send failed: " + e.getMessage());
+                LOG.warn("Audit send failed: {}", e.getMessage());
             }
         }
     }
@@ -208,39 +253,38 @@ public class KVServiceImpl implements ReplicatedService {
                 .collect(Collectors.toList());
     }
 
+    private boolean isReplicaDisabled(String replica) {
+        for (int nodeId : disabledReplicas) {
+            String expectedPrefix = "http://localhost:" + (port + nodeId);
+            if (replica.startsWith(expectedPrefix)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private record ReplicaResponse(byte[] value, boolean found) {
     }
 
-    private ReplicaResponse getFromReplica(String replica, String id) {
+    private ReplicaResponse getFromReplica(String replica, String id) throws IOException {
         if (replica.startsWith(selfAddress)) {
-            try {
-                return new ReplicaResponse(dao.get(id), true);
-            } catch (NoSuchElementException | IOException e) {
-                return new ReplicaResponse(null, false);
-            }
+            byte[] value = dao.get(id);
+            return new ReplicaResponse(value, true);
         }
         return getFromReplicaGrpc(replica, id);
     }
 
-    private void putToReplica(String replica, String id, byte[] body) {
+    private void putToReplica(String replica, String id, byte[] body) throws IOException {
         if (replica.startsWith(selfAddress)) {
-            try {
-                dao.upsert(id, body);
-            } catch (IOException e) {
-                // DAO exception
-            }
+            dao.upsert(id, body);
             return;
         }
         putToReplicaGrpc(replica, id, body);
     }
 
-    private void deleteFromReplica(String replica, String id) {
+    private void deleteFromReplica(String replica, String id) throws IOException {
         if (replica.startsWith(selfAddress)) {
-            try {
-                dao.delete(id);
-            } catch (IOException e) {
-                // DAO exception
-            }
+            dao.delete(id);
             return;
         }
         deleteFromReplicaGrpc(replica, id);
@@ -249,10 +293,10 @@ public class KVServiceImpl implements ReplicatedService {
     private ReplicaResponse getFromReplicaGrpc(String replica, String id) {
         String[] parts = replica.split("\\?grpcPort=");
         String host = extractHost(parts[0]);
-        int port = Integer.parseInt(parts[1]);
+        int grpcPort = Integer.parseInt(parts[1]);
 
         ManagedChannel channel = grpcChannels.computeIfAbsent(replica,
-                k -> ManagedChannelBuilder.forAddress(host, port).usePlaintext().build());
+                k -> ManagedChannelBuilder.forAddress(host, grpcPort).usePlaintext().build());
 
         KVInternalServiceGrpc.KVInternalServiceBlockingStub stub =
                 KVInternalServiceGrpc.newBlockingStub(channel);
@@ -269,10 +313,10 @@ public class KVServiceImpl implements ReplicatedService {
     private void putToReplicaGrpc(String replica, String id, byte[] body) {
         String[] parts = replica.split("\\?grpcPort=");
         String host = extractHost(parts[0]);
-        int port = Integer.parseInt(parts[1]);
+        int grpcPort = Integer.parseInt(parts[1]);
 
         ManagedChannel channel = grpcChannels.computeIfAbsent(replica,
-                k -> ManagedChannelBuilder.forAddress(host, port).usePlaintext().build());
+                k -> ManagedChannelBuilder.forAddress(host, grpcPort).usePlaintext().build());
 
         KVInternalServiceGrpc.KVInternalServiceBlockingStub stub =
                 KVInternalServiceGrpc.newBlockingStub(channel);
@@ -287,10 +331,10 @@ public class KVServiceImpl implements ReplicatedService {
     private void deleteFromReplicaGrpc(String replica, String id) {
         String[] parts = replica.split("\\?grpcPort=");
         String host = extractHost(parts[0]);
-        int port = Integer.parseInt(parts[1]);
+        int grpcPort = Integer.parseInt(parts[1]);
 
         ManagedChannel channel = grpcChannels.computeIfAbsent(replica,
-                k -> ManagedChannelBuilder.forAddress(host, port).usePlaintext().build());
+                k -> ManagedChannelBuilder.forAddress(host, grpcPort).usePlaintext().build());
 
         KVInternalServiceGrpc.KVInternalServiceBlockingStub stub =
                 KVInternalServiceGrpc.newBlockingStub(channel);
@@ -310,10 +354,15 @@ public class KVServiceImpl implements ReplicatedService {
 
         for (String replica : replicas) {
             try {
+                if (isReplicaDisabled(replica)) {
+                    continue;
+                }
                 ReplicaResponse response = getFromReplica(replica, id);
                 if (response.found) {
                     responses.add(response.value.clone());
                 }
+                successCount++;
+            } catch (NoSuchElementException e) {
                 successCount++;
             } catch (Exception e) {
                 // Replica unavailable
@@ -340,6 +389,9 @@ public class KVServiceImpl implements ReplicatedService {
 
         for (String replica : replicas) {
             try {
+                if (isReplicaDisabled(replica)) {
+                    continue;
+                }
                 putToReplica(replica, id, body);
                 successCount++;
             } catch (Exception e) {
@@ -362,6 +414,9 @@ public class KVServiceImpl implements ReplicatedService {
 
         for (String replica : replicas) {
             try {
+                if (isReplicaDisabled(replica)) {
+                    continue;
+                }
                 deleteFromReplica(replica, id);
                 successCount++;
             } catch (Exception e) {
@@ -432,8 +487,9 @@ public class KVServiceImpl implements ReplicatedService {
                 Thread.currentThread().interrupt();
             }
         });
-        if (kafkaProducer != null) {
-            kafkaProducer.close();
+        KafkaProducer<String, String> p = kafkaProducer.get();
+        if (p != null) {
+            p.close();
         }
         try {
             dao.close();
@@ -442,8 +498,3 @@ public class KVServiceImpl implements ReplicatedService {
         }
     }
 }
-
-
-
-
-

@@ -27,9 +27,12 @@ public class Message {
 
     @Override
     public boolean equals(Object o) {
-        if (this == o) return true;
-        if (!(o instanceof Message)) return false;
-        Message message = (Message) o;
+        if (this == o) {
+            return true;
+        }
+        if (!(o instanceof Message message)) {
+            return false;
+        }
         return senderId == message.senderId && type == message.type;
     }
 
